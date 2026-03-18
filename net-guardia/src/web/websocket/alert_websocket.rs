@@ -4,32 +4,31 @@ use futures_util::StreamExt;
 use macros::log;
 use tokio::sync::broadcast;
 
-use crate::core::infrastructure::health::SystemHealth;
+use crate::core::infrastructure::ml_alert::{MLAlert, AlertMessage};
 use crate::model::error::http::HttpError;
 use crate::model::error::misc::MiscError;
 use crate::model::log::http::HttpLog;
-use crate::model::health::SystemHealthMetrics;
 
-pub async fn websocket_system_health(
+pub async fn websocket_alert(
     req: HttpRequest,
     body: web::Payload,
-    health: web::Data<SystemHealth>,
+    ai: web::Data<MLAlert>,
 ) -> Result<HttpResponse> {
     let (response, session, msg_stream) = handle(&req, body)?;
 
-    let broadcast_rx = health.subscribe_to_metrics();
+    let broadcast_rx = ai.subscribe_to_alerts();
 
     actix_web::rt::spawn(async move {
-        handle_health_connection(session, msg_stream, broadcast_rx).await;
+        handle_alert_connection(session, msg_stream, broadcast_rx).await;
     });
 
     Ok(response)
 }
 
-async fn handle_health_connection(
+async fn handle_alert_connection(
     mut session: Session,
     mut msg_stream: MessageStream,
-    mut broadcast_rx: broadcast::Receiver<SystemHealthMetrics>,
+    mut broadcast_rx: broadcast::Receiver<AlertMessage>,
 ) {
     loop {
         tokio::select! {
@@ -40,8 +39,8 @@ async fn handle_health_connection(
             },
             broadcast_result = broadcast_rx.recv() => {
                 match broadcast_result {
-                    Ok(metrics) => {
-                        if !send_metrics(&mut session, &metrics).await {
+                    Ok(alert) => {
+                        if !send_alert(&mut session, &alert).await {
                             break;
                         }
                     }
@@ -80,8 +79,8 @@ async fn handle_client_message(
     }
 }
 
-async fn send_metrics(session: &mut Session, metrics: &SystemHealthMetrics) -> bool {
-    match serde_json::to_string(metrics) {
+async fn send_alert(session: &mut Session, alert: &AlertMessage) -> bool {
+    match serde_json::to_string(alert) {
         Ok(json) => session.text(json).await.is_ok(),
         Err(err) => {
             log!(MiscError::SerializeError(err));
